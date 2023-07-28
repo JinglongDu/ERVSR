@@ -11,7 +11,7 @@ import numbers
 class Attention(nn.Module):
     def __init__(self, dim, num_heads, bias):
         super(Attention, self).__init__()
-        self.num_heads = num_heads
+        self.num_heads = num_heads    # dim=64, num_heads=2, ffn_expansion_factor=2.66, bias=False
         self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
 
         self.kv = nn.Conv2d(dim, dim*2, kernel_size=1, bias=bias)
@@ -24,17 +24,17 @@ class Attention(nn.Module):
     def forward(self, x, ref):
         b,c,h,w = x.shape
 
-        kv = self.kv_dwconv(self.kv(x))
-        k,v = kv.chunk(2, dim=1) 
+        kv = self.kv_dwconv(self.kv(x))    # LR,先对x进行1x1升维, 再进行一次3x3卷积, groups=dim*2, 深度可分离卷积？
+        k,v = kv.chunk(2, dim=1)    # 沿着dim=1将kv拆分成k、v，即(b,dim*2, h,w)变成2个(b,dim, h,w)
 
-        q = self.q_dwconv(self.q(ref))  
+        q = self.q_dwconv(self.q(ref))  # ref, 先对ref进行1x1, 再进行一次3x3卷积, groups=dim
         
         q = rearrange(q, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
         k = rearrange(k, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
         v = rearrange(v, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
 
         q = torch.nn.functional.normalize(q, dim=-1)
-        k = torch.nn.functional.normalize(k, dim=-1)
+        k = torch.nn.functional.normalize(k, dim=-1)    # v为何没有归一化？
         
         attn = (q @ k.transpose(-2, -1)) * self.temperature
         attn = attn.softmax(dim=-1)
@@ -42,7 +42,7 @@ class Attention(nn.Module):
         
         out = rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
 
-        out = self.project_out(out)
+        out = self.project_out(out)    # kernel_size=1
         return out
 
 class BiasFree_LayerNorm(nn.Module):
@@ -125,12 +125,14 @@ class FeedForward(nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, dim, num_heads, ffn_expansion_factor, bias, LayerNorm_type):
         super(TransformerBlock, self).__init__()
-
+        
+        """先LayerNorm归一化，然后再进行transformer"""
         self.norm1 = LayerNorm(dim, LayerNorm_type)
         self.attn = Attention(dim, num_heads, bias)
         self.norm2 = LayerNorm(dim, LayerNorm_type)
-        self.norm3 = LayerNorm(dim, LayerNorm_type)
-        self.ffn = FeedForward(dim, ffn_expansion_factor, bias)
+        self.norm3 = LayerNorm(dim, LayerNorm_type)    # LayerNorm_type='WithBias'
+        self.ffn = FeedForward(dim, ffn_expansion_factor, bias)   # ffn_expansion_factor=2.66, bias=False
+            
 
     def forward(self, input):
         x, ref = input[0], input[1]
@@ -180,7 +182,7 @@ class Network(nn.Module):
             LayerNorm_type='WithBias') for i in range(4)])
 
         self.lr_resblocks = ConvResBlock(3, config.num_feat, config.enc_num_blocks)
-        self.ref_resblocks = ConvResBlock(3, config.num_feat, config.enc_num_blocks)
+        self.ref_resblocks = ConvResBlock(3, config.num_feat, config.enc_num_blocks)    #  config.num_feat = 64
         
 
     def comp_flow(self, lrs):
